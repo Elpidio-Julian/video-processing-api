@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-processing-api
+  labels:
+    app: video-processing-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: video-processing-api
+  template:
+    metadata:
+      labels:
+        app: video-processing-api
+    spec:
+      containers:
+      - name: video-processing-api
+        image: video-processing-api:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: FIREBASE_PROJECT_ID
+          valueFrom:
+            secretKeyRef:
+              name: firebase-secrets
+              key: project-id
+        - name: FIREBASE_PRIVATE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: firebase-secrets
+              key: private-key
+        - name: FIREBASE_CLIENT_EMAIL
+          valueFrom:
+            secretKeyRef:
+              name: firebase-secrets
+              key: client-email
+        - name: FIREBASE_STORAGE_BUCKET
+          valueFrom:
+            secretKeyRef:
+              name: firebase-secrets
+              key: storage-bucket
+        - name: OPENSHOT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openshot-secrets
+              key: api-key
+        - name: OPENSHOT_API_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: api-config
+              key: openshot-endpoint
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /docs
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /docs
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 20 
