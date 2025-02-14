@@ -10,6 +10,7 @@ import ffmpeg
 import tempfile
 import aiofiles
 import subprocess
+from .video_edit_agent import VideoEditAgent
 
 class VideoProcessor:
     def __init__(self):
@@ -27,6 +28,7 @@ class VideoProcessor:
         
         self.db = firestore.client()
         self.bucket = storage.bucket()
+        self.edit_agent = VideoEditAgent()
 
     async def process_video(self, source_url: str, user_id: str):
         """
@@ -99,10 +101,29 @@ class VideoProcessor:
                 await self._download_video(source_url, input_path)
                 self._update_job_status(job_id, 'processing', progress=30)
 
+                # Analyze video and determine processing steps
+                metadata = self.edit_agent.analyze_video(input_path)
+                steps = self.edit_agent.determine_processing_steps(metadata)
+                
+                # Log processing steps for debugging
+                print(f"Processing steps for job {job_id}:")
+                print(json.dumps(steps, indent=2))
+                
+                self._update_job_status(job_id, 'processing', progress=40)
+
                 # Process video with FFmpeg
                 output_path = os.path.join(temp_dir, 'output.mp4')
-                await self._process_with_ffmpeg(input_path, output_path)
-                self._update_job_status(job_id, 'processing', progress=70)
+                command, _ = self.edit_agent.process_video(input_path, output_path)
+                
+                # Run FFmpeg command
+                try:
+                    command.run(capture_stdout=True, capture_stderr=True)
+                    self._update_job_status(job_id, 'processing', progress=70)
+                except ffmpeg.Error as e:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"FFmpeg processing failed: {e.stderr.decode()}"
+                    )
 
                 # Upload processed video to Firebase
                 processed_url = await self._upload_to_firebase(output_path, job_id)
@@ -145,65 +166,6 @@ class VideoProcessor:
                     )
                 async with aiofiles.open(output_path, 'wb') as f:
                     await f.write(await response.read())
-
-    async def _process_with_ffmpeg(self, input_path: str, output_path: str):
-        """
-        Process video using FFmpeg to convert to 9:16 format
-        """
-        try:
-            # Get video metadata
-            probe = ffmpeg.probe(input_path)
-            video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
-            width = int(video_info['width'])
-            height = int(video_info['height'])
-
-            # Calculate scaling to fit 9:16 ratio
-            target_width = 1080
-            target_height = 1920
-            scale = min(target_width/width, target_height/height)
-            new_width = int(width * scale)
-            new_height = int(height * scale)
-
-            # Calculate padding
-            pad_x = (target_width - new_width) // 2
-            pad_y = (target_height - new_height) // 2
-
-            # Build FFmpeg command
-            stream = ffmpeg.input(input_path)
-            
-            # Apply scaling and padding
-            stream = ffmpeg.filter(stream, 'scale', new_width, new_height)
-            stream = ffmpeg.filter(stream, 'pad', target_width, target_height, 
-                                pad_x, pad_y, color='black')
-
-            # Set output options for high quality
-            stream = ffmpeg.output(stream, output_path,
-                vcodec='libx264',
-                acodec='aac',
-                video_bitrate='4M',
-                audio_bitrate='192k',
-                preset='slow',  # Higher quality encoding
-                movflags='faststart'  # Enables streaming
-            )
-
-            # Run FFmpeg command asynchronously
-            await asyncio.to_thread(
-                ffmpeg.run,
-                stream,
-                capture_stdout=True,
-                capture_stderr=True
-            )
-
-        except ffmpeg.Error as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"FFmpeg processing failed: {e.stderr.decode()}"
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Video processing failed: {str(e)}"
-            )
 
     async def _upload_to_firebase(self, video_path: str, job_id: str):
         """
