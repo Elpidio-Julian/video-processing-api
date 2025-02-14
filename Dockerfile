@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     libsm6 \
     libxext6 \
     libgl1-mesa-glx \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -31,6 +32,9 @@ ENV PORT=8000 \
     APP_NAME=video-processing-api \
     APP_VERSION=1.0.0
 
+# Make startup script executable
+RUN chmod +x scripts/startup.py
+
 # Expose port (GKE will use the PORT env variable)
 EXPOSE ${PORT}
 
@@ -38,5 +42,5 @@ EXPOSE ${PORT}
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:${PORT}/docs || exit 1
 
-# Command to run the application
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"] 
+# Command to run the application with startup script
+CMD ["sh", "-c", "python /app/scripts/startup.py && uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"] 
