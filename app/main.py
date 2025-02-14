@@ -4,9 +4,18 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.security import HTTPBearer
 from dotenv import load_dotenv
 import os
+import firebase_admin
+from firebase_admin import credentials
 
 # Load environment variables
 load_dotenv()
+
+# Initialize Firebase Admin SDK
+if not firebase_admin._apps:
+    cred = credentials.Certificate("create-tok-firebase-adminsdk-fbsvc-21d11da1ed.json")
+    firebase_admin.initialize_app(cred, {
+        'storageBucket': os.getenv('FIREBASE_STORAGE_BUCKET')
+    })
 
 app = FastAPI(
     title=os.getenv("APP_NAME", "Video Processing API"),

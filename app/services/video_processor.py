@@ -6,6 +6,10 @@ from datetime import datetime
 import aiohttp
 import asyncio
 from fastapi import HTTPException
+import ffmpeg
+import tempfile
+import aiofiles
+import subprocess
 
 class VideoProcessor:
     def __init__(self):
@@ -23,12 +27,10 @@ class VideoProcessor:
         
         self.db = firestore.client()
         self.bucket = storage.bucket()
-        self.openshot_api_key = os.getenv("OPENSHOT_API_KEY")
-        self.openshot_api_endpoint = os.getenv("OPENSHOT_API_ENDPOINT")
 
     async def process_video(self, source_url: str, user_id: str):
         """
-        Process a video using OpenShot Cloud API
+        Process a video using FFmpeg
         """
         # Create a new document in Firestore
         job_id = self.db.collection('VideoProcessing').document().id
@@ -87,29 +89,26 @@ class VideoProcessor:
         Background task to process the video
         """
         try:
-            # Update status to processing
-            self._update_job_status(job_id, 'processing', progress=10)
+            # Create temporary directory for processing
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Update status to processing
+                self._update_job_status(job_id, 'processing', progress=10)
 
-            # Create OpenShot project
-            project_data = await self._create_openshot_project(job_id)
-            
-            # Add clip to project
-            await self._add_clip_to_project(project_data['id'], source_url)
-            self._update_job_status(job_id, 'processing', progress=30)
+                # Download video from Firebase
+                input_path = os.path.join(temp_dir, 'input.mp4')
+                await self._download_video(source_url, input_path)
+                self._update_job_status(job_id, 'processing', progress=30)
 
-            # Apply transformations
-            await self._apply_transformations(project_data['id'])
-            self._update_job_status(job_id, 'processing', progress=60)
+                # Process video with FFmpeg
+                output_path = os.path.join(temp_dir, 'output.mp4')
+                await self._process_with_ffmpeg(input_path, output_path)
+                self._update_job_status(job_id, 'processing', progress=70)
 
-            # Export video
-            export_url = await self._export_video(project_data['id'])
-            self._update_job_status(job_id, 'processing', progress=90)
-
-            # Upload to Firebase
-            processed_url = await self._upload_to_firebase(export_url, job_id)
-            
-            # Update final status
-            self._update_job_status(job_id, 'completed', processed_url=processed_url)
+                # Upload processed video to Firebase
+                processed_url = await self._upload_to_firebase(output_path, job_id)
+                
+                # Update final status
+                self._update_job_status(job_id, 'completed', processed_url=processed_url)
 
         except Exception as e:
             self._update_job_status(job_id, 'failed', error=str(e))
@@ -133,154 +132,94 @@ class VideoProcessor:
 
         self.db.collection('VideoProcessing').document(job_id).update(update_data)
 
-    async def _handle_openshot_response(self, response: aiohttp.ClientResponse, operation: str):
+    async def _download_video(self, source_url: str, output_path: str):
         """
-        Handle OpenShot API response and errors
+        Download video from Firebase URL to local file
         """
-        if response.status == 401:
-            raise HTTPException(status_code=500, detail="OpenShot API authentication failed")
-        elif response.status == 404:
-            raise HTTPException(status_code=500, detail=f"OpenShot API resource not found: {operation}")
-        elif response.status >= 400:
-            error_data = await response.text()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(source_url) as response:
+                if response.status != 200:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to download video from Firebase: {response.status}"
+                    )
+                async with aiofiles.open(output_path, 'wb') as f:
+                    await f.write(await response.read())
+
+    async def _process_with_ffmpeg(self, input_path: str, output_path: str):
+        """
+        Process video using FFmpeg to convert to 9:16 format
+        """
+        try:
+            # Get video metadata
+            probe = ffmpeg.probe(input_path)
+            video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+            width = int(video_info['width'])
+            height = int(video_info['height'])
+
+            # Calculate scaling to fit 9:16 ratio
+            target_width = 1080
+            target_height = 1920
+            scale = min(target_width/width, target_height/height)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+
+            # Calculate padding
+            pad_x = (target_width - new_width) // 2
+            pad_y = (target_height - new_height) // 2
+
+            # Build FFmpeg command
+            stream = ffmpeg.input(input_path)
+            
+            # Apply scaling and padding
+            stream = ffmpeg.filter(stream, 'scale', new_width, new_height)
+            stream = ffmpeg.filter(stream, 'pad', target_width, target_height, 
+                                pad_x, pad_y, color='black')
+
+            # Set output options for high quality
+            stream = ffmpeg.output(stream, output_path,
+                vcodec='libx264',
+                acodec='aac',
+                video_bitrate='4M',
+                audio_bitrate='192k',
+                preset='slow',  # Higher quality encoding
+                movflags='faststart'  # Enables streaming
+            )
+
+            # Run FFmpeg command asynchronously
+            await asyncio.to_thread(
+                ffmpeg.run,
+                stream,
+                capture_stdout=True,
+                capture_stderr=True
+            )
+
+        except ffmpeg.Error as e:
             raise HTTPException(
                 status_code=500,
-                detail=f"OpenShot API error during {operation}: {error_data}"
+                detail=f"FFmpeg processing failed: {e.stderr.decode()}"
             )
-        
-        try:
-            return await response.json()
         except Exception as e:
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to parse OpenShot API response: {str(e)}"
+                detail=f"Video processing failed: {str(e)}"
             )
 
-    async def _create_openshot_project(self, job_id: str):
-        """
-        Create a new project in OpenShot Cloud
-        """
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{self.openshot_api_endpoint}/projects/",
-                headers={"Authorization": f"Bearer {self.openshot_api_key}"},
-                json={
-                    "name": f"video_{job_id}",
-                    "width": 1080,
-                    "height": 1920
-                }
-            ) as response:
-                return await self._handle_openshot_response(response, "project creation")
-
-    async def _add_clip_to_project(self, project_id: str, source_url: str):
-        """
-        Add a clip to the OpenShot project
-        """
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{self.openshot_api_endpoint}/projects/{project_id}/clips",
-                headers={"Authorization": f"Bearer {self.openshot_api_key}"},
-                json={
-                    "file": source_url,
-                    "position": 0,
-                    "layer": 1
-                }
-            ) as response:
-                return await self._handle_openshot_response(response, "adding clip")
-
-    async def _apply_transformations(self, project_id: str):
-        """
-        Apply video transformations in OpenShot to convert to 9:16 format
-        """
-        async with aiohttp.ClientSession() as session:
-            # First, get the clip properties to calculate scaling
-            async with session.get(
-                f"{self.openshot_api_endpoint}/projects/{project_id}/clips",
-                headers={"Authorization": f"Bearer {self.openshot_api_key}"}
-            ) as response:
-                clips_data = await self._handle_openshot_response(response, "getting clips")
-                if not clips_data:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="No clips found in project"
-                    )
-                
-                clip = clips_data[0]  # Get the first clip
-                original_width = clip.get('width', 1920)
-                original_height = clip.get('height', 1080)
-
-            # Calculate scaling to fit 9:16 ratio while maintaining aspect ratio
-            target_width = 1080  # For 9:16 vertical video
-            target_height = 1920
-
-            # Calculate scale factor to fit video within 9:16 frame
-            width_scale = target_width / original_width
-            height_scale = target_height / original_height
-            scale = min(width_scale, height_scale)
-
-            # Calculate new dimensions
-            new_width = original_width * scale
-            new_height = original_height * scale
-
-            # Calculate position to center the video
-            x_offset = (target_width - new_width) / 2
-            y_offset = (target_height - new_height) / 2
-
-            # Update clip properties
-            async with session.put(
-                f"{self.openshot_api_endpoint}/projects/{project_id}/clips/{clip['id']}",
-                headers={"Authorization": f"Bearer {self.openshot_api_key}"},
-                json={
-                    "scale": scale,
-                    "location_x": x_offset,
-                    "location_y": y_offset,
-                    "gravity": "center",
-                    "background_color": "#000000"
-                }
-            ) as response:
-                return await self._handle_openshot_response(response, "applying transformations")
-
-    async def _export_video(self, project_id: str):
-        """
-        Export the video from OpenShot
-        """
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{self.openshot_api_endpoint}/projects/{project_id}/exports",
-                headers={"Authorization": f"Bearer {self.openshot_api_key}"},
-                json={
-                    "format": "mp4",
-                    "video_codec": "libx264",
-                    "video_bitrate": "4000k",
-                    "audio_codec": "aac",
-                    "audio_bitrate": "128k",
-                    "width": 1080,
-                    "height": 1920
-                }
-            ) as response:
-                export_data = await self._handle_openshot_response(response, "exporting video")
-                export_url = export_data.get('url')
-                if not export_url:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="No export URL received from OpenShot"
-                    )
-                return export_url
-
-    async def _upload_to_firebase(self, video_url: str, job_id: str):
+    async def _upload_to_firebase(self, video_path: str, job_id: str):
         """
         Upload the processed video to Firebase Storage
         """
-        # Download video from OpenShot
-        async with aiohttp.ClientSession() as session:
-            async with session.get(video_url) as response:
-                video_data = await response.read()
-
-        # Upload to Firebase in user-specific directory
-        blob = self.bucket.blob(f"processed/{job_id}.mp4")
-        blob.upload_from_string(video_data, content_type='video/mp4')
-        
-        # Make the blob publicly accessible
-        blob.make_public()
-        
-        return blob.public_url 
+        try:
+            # Upload to Firebase in processed directory
+            blob = self.bucket.blob(f"processed/{job_id}.mp4")
+            blob.upload_from_filename(video_path, content_type='video/mp4')
+            
+            # Make the blob publicly accessible
+            blob.make_public()
+            
+            return blob.public_url
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to upload processed video to Firebase: {str(e)}"
+            ) 

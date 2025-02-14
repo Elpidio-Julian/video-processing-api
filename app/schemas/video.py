@@ -1,4 +1,4 @@
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
@@ -17,7 +17,6 @@ class VideoStatusResponse(BaseModel):
     error: Optional[str] = None
     created_at: datetime
     updated_at: datetime
-    user_id: str
 
 class VideoMetadata(BaseModel):
     filename: str
