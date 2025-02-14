@@ -40,7 +40,7 @@ EXPOSE ${PORT}
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/docs || exit 1
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
 # Command to run the application with startup script
 CMD ["sh", "-c", "python /app/scripts/startup.py && uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"] 

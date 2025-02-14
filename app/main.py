@@ -50,6 +50,18 @@ app = FastAPI(
     """
 )
 
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint that returns the status of the API and its dependencies.
+    No authentication required.
+    """
+    return {
+        "status": "healthy",
+        "version": os.getenv("APP_VERSION", "1.0.0"),
+        "firebase": "connected" if firebase_admin._apps else "not_connected"
+    }
+
 # Configure CORS for Expo Go development
 origins = [
     "http://localhost",
