@@ -1,9 +1,19 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Literal
 from datetime import datetime
+from enum import Enum
+
+class HUDLocation(str, Enum):
+    BOTTOM_RIGHT = "bottom_right"
+    TOP_RIGHT = "top_right"
+    BOTTOM_LEFT = "bottom_left"
+    TOP_LEFT = "top_left"
 
 class VideoProcessRequest(BaseModel):
-    source_url: str
+    videoUrl: str
+    videoId: str
+    userId: str
+    prompt: Optional[str] = None
 
 class VideoProcessResponse(BaseModel):
     job_id: str

@@ -11,6 +11,7 @@ import tempfile
 import aiofiles
 import subprocess
 from .video_edit_agent import VideoEditAgent
+from typing import Optional
 
 class VideoProcessor:
     def __init__(self):
@@ -30,12 +31,12 @@ class VideoProcessor:
         self.bucket = storage.bucket()
         self.edit_agent = VideoEditAgent()
 
-    async def process_video(self, source_url: str, user_id: str):
+    async def process_video(self, source_url: str, video_id: str, user_id: str, prompt: Optional[str] = None):
         """
-        Process a video using FFmpeg
+        Process a video using the AI-powered video editing agent
         """
-        # Create a new document in Firestore
-        job_id = self.db.collection('VideoProcessing').document().id
+        # Use the provided video_id as the job_id
+        job_id = video_id
         
         # Initialize job document
         self.db.collection('VideoProcessing').document(job_id).set({
@@ -44,17 +45,13 @@ class VideoProcessor:
             'originalUrl': source_url,
             'status': 'queued',
             'progress': 0,
+            'prompt': prompt,
             'createdAt': datetime.utcnow(),
-            'updatedAt': datetime.utcnow(),
-            'processingOptions': {
-                'targetAspectRatio': '9:16',
-                'backgroundBlur': False,
-                'quality': 'high'
-            }
+            'updatedAt': datetime.utcnow()
         })
 
         # Start processing in background
-        asyncio.create_task(self._process_video_task(job_id, source_url))
+        asyncio.create_task(self._process_video_task(job_id, source_url, prompt))
 
         return {
             'job_id': job_id,
@@ -86,11 +83,34 @@ class VideoProcessor:
             'user_id': data.get('userId')
         }
 
-    async def _process_video_task(self, job_id: str, source_url: str):
+    async def _create_video_document(self, job_id: str, user_id: str, processed_url: str, original_url: str, prompt: Optional[str] = None):
         """
-        Background task to process the video
+        Create a video document in Firestore after successful processing
+        """
+        video_data = {
+            'videoId': job_id,
+            'userId': user_id,
+            'originalUrl': original_url,
+            'processedUrl': processed_url,
+            'prompt': prompt,
+            'createdAt': datetime.utcnow(),
+            'updatedAt': datetime.utcnow(),
+            'status': 'completed'
+        }
+        
+        # Create the video document
+        self.db.collection('videos').document(job_id).set(video_data)
+        return video_data
+
+    async def _process_video_task(self, job_id: str, source_url: str, prompt: Optional[str] = None):
+        """
+        Background task to process the video using VideoEditAgent
         """
         try:
+            # Get the job data to access user_id
+            job_data = self.db.collection('VideoProcessing').document(job_id).get().to_dict()
+            user_id = job_data.get('userId')
+
             # Create temporary directory for processing
             with tempfile.TemporaryDirectory() as temp_dir:
                 # Update status to processing
@@ -101,17 +121,7 @@ class VideoProcessor:
                 await self._download_video(source_url, input_path)
                 self._update_job_status(job_id, 'processing', progress=30)
 
-                # Analyze video and determine processing steps
-                metadata = self.edit_agent.analyze_video(input_path)
-                steps = self.edit_agent.determine_processing_steps(metadata)
-                
-                # Log processing steps for debugging
-                print(f"Processing steps for job {job_id}:")
-                print(json.dumps(steps, indent=2))
-                
-                self._update_job_status(job_id, 'processing', progress=40)
-
-                # Process video with FFmpeg
+                # Process video using the edit agent
                 output_path = os.path.join(temp_dir, 'output.mp4')
                 command, _ = self.edit_agent.process_video(input_path, output_path)
                 
@@ -127,6 +137,15 @@ class VideoProcessor:
 
                 # Upload processed video to Firebase
                 processed_url = await self._upload_to_firebase(output_path, job_id)
+                
+                # Create video document in Firestore
+                await self._create_video_document(
+                    job_id=job_id,
+                    user_id=user_id,
+                    processed_url=processed_url,
+                    original_url=source_url,
+                    prompt=prompt
+                )
                 
                 # Update final status
                 self._update_job_status(job_id, 'completed', processed_url=processed_url)

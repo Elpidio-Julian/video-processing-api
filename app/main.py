@@ -21,7 +21,7 @@ app = FastAPI(
     title=os.getenv("APP_NAME", "Video Processing API"),
     version=os.getenv("APP_VERSION", "1.0.0"),
     description="""
-    API for processing videos using OpenShot Cloud and Firebase Storage.
+    API for processing videos using AI-powered video editing.
     
     ## Authentication
     This API uses Firebase Authentication. You need to include a Firebase ID token in the Authorization header:
@@ -31,32 +31,76 @@ app = FastAPI(
     
     ## Features
     - Video processing to vertical format (9:16)
-    - Background effects (blur/color)
+    - Intelligent HUD element detection and repositioning
     - Progress tracking
     - Firebase Storage integration
     
-    ## OpenShot Cloud Integration
-    This API integrates with OpenShot Cloud API for video processing. The following operations are supported:
-    
-    ### Project Creation
-    - Creates a new project with 1080x1920 dimensions
-    - Configures project settings for vertical video
-    
-    ### Video Processing
-    - Adds video clips to the project
-    - Applies transformations (aspect ratio, background effects)
-    - Exports in high quality MP4 format
+    ## Video Processing
+    The API uses an AI-powered video editing agent that:
+    - Analyzes video content
+    - Detects and tracks HUD elements
+    - Optimizes layout for vertical format
+    - Maintains video quality
     
     ### Technical Specifications
+    - Output Format: MP4
+    - Resolution: 1080x1920 (9:16)
     - Video Codec: libx264
-    - Video Bitrate: 4000k
     - Audio Codec: aac
-    - Audio Bitrate: 128k
     """
 )
 
-# Configure CORS
-origins = eval(os.getenv("CORS_ORIGINS", '["http://localhost:3000"]'))
+# Configure CORS for Expo Go development
+origins = [
+    "http://localhost",
+    "http://localhost:19000",
+    "http://localhost:19001",
+    "http://localhost:19002",
+    "http://localhost:19006",
+    "exp://localhost:19000",
+    "exp://localhost:19001",
+    "exp://localhost:19002",
+    "exp://localhost:19006",
+]
+
+# Add dynamic IP-based origins for Expo Go
+import socket
+def get_local_ip():
+    try:
+        # Get local IP address
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except:
+        return None
+
+local_ip = get_local_ip()
+if local_ip:
+    # Add IP-based origins for Expo Go
+    ip_origins = [
+        f"http://{local_ip}:19000",
+        f"http://{local_ip}:19001",
+        f"http://{local_ip}:19002",
+        f"http://{local_ip}:19006",
+        f"exp://{local_ip}:19000",
+        f"exp://{local_ip}:19001",
+        f"exp://{local_ip}:19002",
+        f"exp://{local_ip}:19006",
+    ]
+    origins.extend(ip_origins)
+
+# Add any additional origins from environment variable
+env_origins = os.getenv("CORS_ORIGINS")
+if env_origins:
+    try:
+        additional_origins = eval(env_origins)
+        if isinstance(additional_origins, list):
+            origins.extend(additional_origins)
+    except:
+        pass
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,

@@ -1,24 +1,25 @@
-from fastapi import HTTPException, Security, Depends
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from firebase_admin import auth
+from typing import Optional
 
 security = HTTPBearer()
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
+async def verify_firebase_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """
     Verify Firebase ID token and return the user ID.
-    This is a simplified version that only returns the user ID.
+    This uses the Firebase Admin SDK to verify the token from the client.
     """
-    if not credentials:
-        raise HTTPException(status_code=403, detail="No credentials provided")
-    
     try:
+        # Remove 'Bearer ' prefix if present
         token = credentials.credentials
-        # Verify the token and get the user ID
+        # Verify the token
         decoded_token = auth.verify_id_token(token)
-        return decoded_token.get('uid')
+        # Return the user ID from the token
+        return decoded_token['uid']
     except Exception as e:
         raise HTTPException(
-            status_code=401,
-            detail=f"Invalid authentication credentials: {str(e)}"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid authentication credentials: {str(e)}",
+            headers={"WWW-Authenticate": "Bearer"},
         ) 
