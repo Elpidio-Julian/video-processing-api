@@ -3,7 +3,7 @@ FROM python:3.11-slim
 
 # Add labels for Google Container Registry
 LABEL maintainer="Video Processing API"
-LABEL org.opencontainers.image.source="https://github.com/your-repo/video-processing-api"
+LABEL org.opencontainers.image.source="https://github.com/Elpidio-Julian/video-processing-api"
 
 # Install system dependencies including FFmpeg
 RUN apt-get update && apt-get install -y \
